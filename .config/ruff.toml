@@ -1,0 +1,32 @@
+line-length = 120
+
+target-version = "py39"
+
+src = ["docs-gen", "image/src"]
+
+include = [
+    "docs-gen/*.py",
+    "image/src/*.py",
+    "image/setup.py",
+    "image/tools/*.py",
+]
+
+[lint]
+# The rules ruff enabled by default before 0.16, which expanded the default set considerably.
+select = ["E4", "E7", "E9", "F"]
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[lint.flake8-quotes]
+inline-quotes = "single"
+multiline-quotes = "single"
+docstring-quotes = "double"
+
+[format]
+quote-style = "single"
+docstring-code-format = true

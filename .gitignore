@@ -1,0 +1,14 @@
+.terraform/
+/.idea/
+.pytest_cache/
+/venv/
+.terraform.lock.hcl
+.terraform-bin-dir/
+.gpg/
+build/
+__pycache__/
+.DS_Store
+*.egg-info/
+
+# API cache files
+github_api_cache.sqlite

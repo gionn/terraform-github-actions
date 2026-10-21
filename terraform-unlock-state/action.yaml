@@ -1,0 +1,35 @@
+name: terraform-unlock-state
+description: Force unlocks a Terraform remote state.
+author: Daniel Flook
+
+inputs:
+  path:
+    description: Path to the Terraform root module that defines the remote state to unlock
+    required: false
+    default: "."
+  workspace:
+    description: Terraform workspace to unlock the remote state for
+    required: false
+    default: "default"
+  backend_config:
+    description: List of Terraform backend config values, one per line.
+    required: false
+    default: ""
+  backend_config_file:
+    description: |
+      List of Terraform backend config files to use, one per line.
+      Paths should be relative to the GitHub Actions workspace
+    required: false
+    default: ""
+  lock_id:
+    description: The ID of the state lock to release.
+    required: true
+
+runs:
+  using: docker
+  image: docker://ghcr.io/gionn/terraform-github-actions@sha256:ba05bb32d9970f02fac68154f6516860e446ad6e9b0f5c2a229dd9ec2e9ef547
+  entrypoint: /entrypoints/unlock-state.sh
+
+branding:
+  icon: globe
+  color: purple
