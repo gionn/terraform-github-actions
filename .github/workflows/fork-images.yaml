@@ -1,0 +1,156 @@
+name: Fork images
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - image/**
+      - terraform-*/action.yaml
+      - tofu-*/action.yaml
+      - .github/workflows/fork-images.yaml
+  schedule:
+    - cron: 0 1 1 * *
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04
+    name: Build images
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.image_build.outputs.digest }}
+      base-digest: ${{ steps.base_build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Registry login
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build base image
+        id: base_build
+        run: |
+          BASE_IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/terraform-github-actions-base"
+          DEBIAN_DIGEST=$(docker buildx imagetools inspect "debian:trixie-slim" --format '{{json .}}' | jq -r '.manifest.digest')
+
+          sed -i "s|FROM debian:trixie-slim|FROM debian:trixie-slim@$DEBIAN_DIGEST|" "image/Dockerfile-base"
+
+          docker buildx build \
+            --tag "$BASE_IMAGE:$GITHUB_RUN_ID" \
+            --tag "$BASE_IMAGE:latest" \
+            --platform linux/amd64,linux/arm64 \
+            --attest "type=provenance,mode=max,builder-id=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --annotation "index,manifest:org.opencontainers.image.created=$(date '+%Y-%m-%dT%H:%M:%S%z')" \
+            --annotation "index,manifest:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "index,manifest:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index,manifest:org.opencontainers.image.title=terraform-github-actions-base" \
+            --annotation "index,manifest:org.opencontainers.image.description=Base image for terraform-github-actions" \
+            --annotation "index:org.opencontainers.image.ref.name=$BASE_IMAGE:$GITHUB_RUN_ID" \
+            --annotation "index,manifest:builder-id=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --annotation "index,manifest:ref.tag=$GITHUB_RUN_ID" \
+            --annotation "index,manifest:org.opencontainers.image.base.name=docker.io/debian:trixie-slim" \
+            --annotation "index,manifest:base.manifest.digest=$DEBIAN_DIGEST" \
+            --file image/Dockerfile-base \
+            --push \
+            --iidfile base-digest.txt \
+            image
+
+          echo "digest=$(<base-digest.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Build action image
+        id: image_build
+        env:
+          BASE_DIGEST: ${{ steps.base_build.outputs.digest }}
+        run: |
+          BASE_IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/terraform-github-actions-base"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/terraform-github-actions"
+
+          sed -i "s|FROM danielflook/terraform-github-actions-base:latest|FROM $BASE_IMAGE@$BASE_DIGEST|" "image/Dockerfile"
+
+          docker buildx build \
+            --build-arg FETCH_CHECKSUMS=yes \
+            --tag "$IMAGE:$GITHUB_RUN_ID" \
+            --tag "$IMAGE:latest" \
+            --platform linux/amd64,linux/arm64 \
+            --attest "type=provenance,mode=max,builder-id=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --annotation "index,manifest:org.opencontainers.image.created=$(date '+%Y-%m-%dT%H:%M:%S%z')" \
+            --annotation "index,manifest:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "index,manifest:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index,manifest:org.opencontainers.image.title=terraform-github-actions" \
+            --annotation "index,manifest:org.opencontainers.image.description=GitHub actions for terraform" \
+            --annotation "index:org.opencontainers.image.ref.name=$IMAGE:$GITHUB_RUN_ID" \
+            --annotation "index,manifest:builder-id=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --annotation "index,manifest:ref.tag=$GITHUB_RUN_ID" \
+            --annotation "index,manifest:org.opencontainers.image.base.name=$BASE_IMAGE" \
+            --annotation "index,manifest:base.manifest.digest=$BASE_DIGEST" \
+            --push \
+            --iidfile manifest-list-digest.txt \
+            image
+
+          echo "digest=$(<manifest-list-digest.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Base image attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/terraform-github-actions-base
+          subject-digest: ${{ steps.base_build.outputs.digest }}
+
+      - name: Action image attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/terraform-github-actions
+          subject-digest: ${{ steps.image_build.outputs.digest }}
+
+  ghcr-branch:
+    runs-on: ubuntu-24.04
+    name: Publish ghcr branch
+    needs:
+      - images
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Point actions at the ghcr image
+        env:
+          IMAGE_DIGEST: ${{ needs.images.outputs.digest }}
+          BASE_DIGEST: ${{ needs.images.outputs.base-digest }}
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+
+          find . -name action.yaml -exec \
+            sed -i "s|  image:.*|  image: docker://ghcr.io/$OWNER/terraform-github-actions@$IMAGE_DIGEST|" {} +
+
+          sed -i "s|FROM danielflook/terraform-github-actions-base:latest|FROM ghcr.io/$OWNER/terraform-github-actions-base@$BASE_DIGEST|" "image/Dockerfile"
+
+      - name: Push ghcr branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # GITHUB_TOKEN can't push changes to workflow files, so the branch never carries .github
+          rm -rf .github
+          git checkout --orphan ghcr
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "ghcr images for $GITHUB_SHA"
+          git push --force "https://x-access-token:$GITHUB_TOKEN@github.com/$GITHUB_REPOSITORY.git" ghcr
